@@ -1,4 +1,4 @@
-name: astrbot-plugin-Hidetool
+name: astrbot_plugin_Hidetool
 display_name: 工具懒加载 (Tool Gate)
 short_desc: 隐藏工具描述节省 70%+ token，LLM 按需解锁
 desc: >
