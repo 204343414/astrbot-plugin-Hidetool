@@ -1,6 +1,10 @@
-name: helloworld # 插件唯一识别名，以 astrbot_plugin_ 前缀开头
-display_name: helloworld # 用于展示的名字，可以是方便人类阅读的名字（需要版本 >= v4.5.0，低版本不会报错，请放心填写）
-desc: AstrBot 插件示例。 # 插件简短描述
-version: v1.3.0 # 插件版本号。格式：v1.1.1 或者 v1.1
-author: Soulter # 作者
-repo: https://github.com/Soulter/helloworld # 插件的仓库地址
+name: astrbot_plugin_tool_gate
+display_name: 工具懒加载 (Tool Gate)
+short_desc: 隐藏工具描述节省 70%+ token，LLM 按需解锁
+desc: >
+  将所有工具 schema 隐藏，LLM 平时只看到一个"解锁工具"的元工具和一份精简目录。
+  需要调用工具时先解锁，解锁后与未安装本插件时完全一致。
+  闲聊场景可节省 70-90% 的工具描述 token 消耗。
+version: v0.1.0
+author: Arena.ai Agent
+repo: ""

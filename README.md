@@ -1,14 +1,59 @@
-# astrbot-plugin-helloworld
+# 🔒 Tool Gate — AstrBot 工具懒加载插件
 
-AstrBot 插件模板 / A template plugin for AstrBot plugin feature
+> 把所有工具描述隐藏，LLM 平时只看到 1 个"解锁"工具。需要用工具时先解锁，解锁后和没装插件一模一样。
 
-> [!NOTE]
-> This repo is just a template of [AstrBot](https://github.com/AstrBotDevs/AstrBot) Plugin.
-> 
-> [AstrBot](https://github.com/AstrBotDevs/AstrBot) is an agentic assistant for both personal and group conversations. It can be deployed across dozens of mainstream instant messaging platforms, including QQ, Telegram, Feishu, DingTalk, Slack, LINE, Discord, Matrix, etc. In addition, it provides a reliable and extensible conversational AI infrastructure for individuals, developers, and teams. Whether you need a personal AI companion, an intelligent customer support agent, an automation assistant, or an enterprise knowledge base, AstrBot enables you to quickly build AI applications directly within your existing messaging workflows.
+## 解决什么问题？
 
-# Supports
+装了很多工具插件后（天气、搜索、画图、提醒……），每次 LLM 请求都会带上**所有工具的完整参数描述**，即使用户只是说了句"你好"。
 
-- [AstrBot Repo](https://github.com/AstrBotDevs/AstrBot)
-- [AstrBot Plugin Development Docs (Chinese)](https://docs.astrbot.app/dev/star/plugin-new.html)
-- [AstrBot Plugin Development Docs (English)](https://docs.astrbot.app/en/dev/star/plugin-new.html)
+- 20 个工具 ≈ **3000-5000 token** 的工具描述
+- 每条消息都重复发送
+- 你的钱就这么烧掉了 💸
+
+## 装了这个插件后
+
+```
+用户: "你好呀~"
+
+LLM 看到的工具: 只有 activate_tools（~50 token）
+LLM 看到的提示: 一份精简目录（~200 token）
+LLM 判断: 不需要工具 → 直接回复
+总计: ~250 token（原来要 4000+，省了 90%+）
+```
+
+```
+用户: "帮我查一下北京天气"
+
+LLM 看到目录里有 get_weather → 调用 activate_tools
+  → 所有工具瞬间解锁，和没装插件一模一样
+  → LLM 正常调用 get_weather(location="北京")
+  → 返回天气
+```
+
+## 安装
+
+在 AstrBot WebUI 插件管理中安装，或手动克隆到 `data/plugins/` 目录。
+
+## 配置
+
+| 配置项 | 类型 | 默认值 | 说明 |
+|--------|------|--------|------|
+| `enabled` | bool | `true` | 总开关 |
+| `always_active_tools` | list | `[]` | 始终保持激活的工具名列表（不被隐藏） |
+| `min_tools_to_activate` | int | `3` | 工具总数少于此值时不启用懒加载 |
+| `debug` | bool | `true` | 调试日志（正式使用请关闭） |
+
+## 工作原理
+
+1. **`on_llm_request` hook**（最低优先级）拦截所有工具
+2. 生成精简目录（每个工具一行：`名字: 一句话描述`）
+3. 用 `activate_tools` 元工具替换掉所有工具
+4. LLM 调用 `activate_tools` → 所有工具塞回 ToolSet → 和没装插件完全一样
+5. 整个 tool loop 回合内保持解锁状态
+6. 下一条用户消息 → 重新锁定
+
+## 注意事项
+
+- 需要 AstrBot 工具调用模式设为 **Full**（完整参数），不要用 skills-like
+- 如果某个工具必须每次都可用（比如搜索），把它加到 `always_active_tools`
+- 调试模式下会在控制台打印详细的拦截/解锁日志

@@ -1,0 +1,25 @@
+{
+  "enabled": {
+    "description": "启用工具懒加载（关闭后插件完全不生效）",
+    "type": "bool",
+    "default": true
+  },
+  "always_active_tools": {
+    "description": "始终保持激活的工具名列表（这些工具不会被隐藏，留空则全部隐藏）",
+    "type": "list",
+    "default": [],
+    "hint": "填写工具的 name，如 web_search。留空表示所有工具都走懒加载。"
+  },
+  "min_tools_to_activate": {
+    "description": "至少注册多少个工具时才启用懒加载（工具少的时候没必要）",
+    "type": "int",
+    "default": 3,
+    "hint": "如果当前注册的工具总数小于此值，则跳过懒加载，直接下发全部工具。"
+  },
+  "debug": {
+    "description": "调试模式（在控制台打印详细的拦截/解锁日志）",
+    "type": "bool",
+    "default": true,
+    "hint": "正式使用时建议关闭，避免日志刷屏。"
+  }
+}
