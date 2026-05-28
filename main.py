@@ -32,31 +32,26 @@ class ToolGatePlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
         self.config = config
-        # 记录当前正在处理的 event，供 debug 消息发送用
         self._current_event: AstrMessageEvent | None = None
 
     # ──────────────────────────────────────────────
     #  核心 Hook: 在 LLM 请求前拦截工具列表
     # ──────────────────────────────────────────────
-    @filter.on_llm_request(priority=-99)  # 低优先级 = 最后执行，让其他插件先注册完工具
+    @filter.on_llm_request(priority=-99)
     async def intercept_tools(self, event: AstrMessageEvent, req: ProviderRequest):
         self._current_event = event
 
-        # ── 检查开关 ──
         if not self.config.get("enabled", True):
             return
 
-        # ── 获取当前工具集 ──
         func_tool: ToolSet | None = req.func_tool
         if func_tool is None or func_tool.empty():
             return
 
-        # 拿到所有工具的引用列表
-        all_tools: list[FunctionTool] = list(func_tool.tools)  # 浅拷贝一份
+        all_tools: list[FunctionTool] = list(func_tool.tools)
         if not all_tools:
             return
 
-        # ── 工具太少，不值得懒加载 ──
         min_count = self.config.get("min_tools_to_activate", 3)
         if len(all_tools) < min_count:
             self._debug(
@@ -64,14 +59,12 @@ class ToolGatePlugin(Star):
             )
             return
 
-        # ── 防止重复拦截 ──
         tool_names = [t.name for t in all_tools]
         if "activate_tools" in tool_names:
             return
 
         self._debug(f"[ToolGate] 🔒 拦截 {len(all_tools)} 个工具: {tool_names}")
 
-        # ── 分离: 始终激活的 vs 需要隐藏的 ──
         always_active_names = set(self.config.get("always_active_tools", []))
         hidden_tools: list[FunctionTool] = []
         kept_tools: list[FunctionTool] = []
@@ -95,24 +88,25 @@ class ToolGatePlugin(Star):
             catalog_lines.append(f"  • {tool.name}: {desc}")
 
         catalog_text = (
-            "\n<available_tools_catalog>\n"
-            "以下工具当前处于待命状态。如果你需要使用任何工具来完成用户的请求，"
-            "请先调用 activate_tools 来激活它们：\n"
+            "\n<tool_gate_system_notice>\n"
+            "【系统】为节省资源，你的工具箱当前处于待命状态。\n"
+            "下面是你拥有的全部工具能力一览：\n"
             + "\n".join(catalog_lines)
-            + "\n</available_tools_catalog>"
+            + "\n\n"
+            "当你判断需要调用任何工具时，请先调用 activate_tools 来解锁。\n"
+            "解锁是系统层面的操作，不需要向用户解释这个过程。\n"
+            "如果当前对话不需要任何工具，直接正常回复即可。\n"
+            "</tool_gate_system_notice>"
         )
 
-        # ── 注入目录到临时上下文（不进历史记录） ──
         req.extra_user_content_parts.append(TextPart(text=catalog_text).mark_as_temp())
 
-        # ── 创建 activate_tools 元工具 ──
         activate_tool = _make_activate_tool(
             hidden_tools=hidden_tools,
             target_tool_set=func_tool,
             debug_fn=self._debug,
         )
 
-        # ── 替换工具集: 清空 → 只放 activate_tools + 白名单 ──
         func_tool.tools.clear()
         func_tool.add_tool(activate_tool)
         for t in kept_tools:
@@ -130,9 +124,7 @@ class ToolGatePlugin(Star):
     def _debug(self, msg: str):
         if not self.config.get("debug", True):
             return
-        # 控制台始终打印
         logger.info(msg)
-        # 同时发到当前会话的 QQ
         event = self._current_event
         if event is not None:
             import asyncio
@@ -140,14 +132,13 @@ class ToolGatePlugin(Star):
                 loop = asyncio.get_running_loop()
                 loop.create_task(self._send_debug(event, msg))
             except RuntimeError:
-                pass  # 没有 event loop 就算了
+                pass
 
     async def _send_debug(self, event: AstrMessageEvent, msg: str):
-        """安全地把 debug 信息发到 QQ。"""
         try:
             await event.send(event.plain_result(f"🔧 {msg}"))
         except Exception:
-            pass  # debug 消息发送失败不影响主流程
+            pass
 
     async def terminate(self):
         pass
@@ -163,16 +154,9 @@ def _make_activate_tool(
     target_tool_set: ToolSet,
     debug_fn,
 ) -> FunctionTool:
-    """
-    工厂函数：创建 activate_tools FunctionTool 实例。
-    通过 handler 字段注入闭包，框架会走 handler 执行路径。
-    """
+    """工厂函数：创建 activate_tools 元工具。"""
 
     async def _activate_handler(event, **kwargs):
-        """
-        handler 签名: async def handler(event: AstrMessageEvent, **kwargs)
-        框架在 _execute_local 中会把 event 作为第一个参数传入。
-        """
         restored = []
         for tool in hidden_tools:
             target_tool_set.add_tool(tool)
@@ -181,16 +165,17 @@ def _make_activate_tool(
         debug_fn(f"[ToolGate] ✅ 解锁 {len(restored)} 个工具: {restored}")
 
         return (
-            f"已成功激活 {len(restored)} 个工具: {', '.join(restored)}。"
+            f"已成功解锁 {len(restored)} 个工具: {', '.join(restored)}。"
             f"你现在可以直接调用这些工具了。"
         )
 
-    # 通过 handler 字段注入，这是框架 _execute_local 认可的执行路径
     tool = FunctionTool(
         name="activate_tools",
         description=(
-            "激活所有待命工具。在调用其他工具之前，你必须先调用此工具来解锁它们。"
-            "此工具无需任何参数。"
+            "解锁工具箱。你的工具当前处于待命状态，"
+            "当你需要调用任何工具时，必须先调用此工具来解锁。"
+            "无需参数，调用即解锁全部工具。"
+            "这是一个静默的系统操作，无需向用户提及。"
         ),
         parameters={
             "type": "object",
