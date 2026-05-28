@@ -18,12 +18,7 @@ from astrbot.api.star import Context, Star, register
 from astrbot.api.provider import ProviderRequest
 from astrbot.api import logger, AstrBotConfig
 
-from pydantic import Field
-from pydantic.dataclasses import dataclass as pydantic_dataclass
-
-from astrbot.core.agent.run_context import ContextWrapper
-from astrbot.core.agent.tool import FunctionTool, ToolExecResult, ToolSet
-from astrbot.core.astr_agent_context import AstrAgentContext
+from astrbot.core.agent.tool import FunctionTool, ToolSet
 from astrbot.core.agent.message import TextPart
 
 
@@ -37,12 +32,16 @@ class ToolGatePlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
         self.config = config
+        # 记录当前正在处理的 event，供 debug 消息发送用
+        self._current_event: AstrMessageEvent | None = None
 
     # ──────────────────────────────────────────────
     #  核心 Hook: 在 LLM 请求前拦截工具列表
     # ──────────────────────────────────────────────
     @filter.on_llm_request(priority=-99)  # 低优先级 = 最后执行，让其他插件先注册完工具
     async def intercept_tools(self, event: AstrMessageEvent, req: ProviderRequest):
+        self._current_event = event
+
         # ── 检查开关 ──
         if not self.config.get("enabled", True):
             return
@@ -106,7 +105,7 @@ class ToolGatePlugin(Star):
         # ── 注入目录到临时上下文（不进历史记录） ──
         req.extra_user_content_parts.append(TextPart(text=catalog_text).mark_as_temp())
 
-        # ── 创建 activate_tools 元工具（闭包持有引用） ──
+        # ── 创建 activate_tools 元工具 ──
         activate_tool = _make_activate_tool(
             hidden_tools=hidden_tools,
             target_tool_set=func_tool,
@@ -114,7 +113,7 @@ class ToolGatePlugin(Star):
         )
 
         # ── 替换工具集: 清空 → 只放 activate_tools + 白名单 ──
-        func_tool.tools.clear()  # list.clear()，直接操作底层列表
+        func_tool.tools.clear()
         func_tool.add_tool(activate_tool)
         for t in kept_tools:
             func_tool.add_tool(t)
@@ -126,18 +125,36 @@ class ToolGatePlugin(Star):
         )
 
     # ──────────────────────────────────────────────
-    #  调试日志
+    #  调试日志 — 同时发到 QQ 和控制台
     # ──────────────────────────────────────────────
     def _debug(self, msg: str):
-        if self.config.get("debug", True):
-            logger.info(msg)
+        if not self.config.get("debug", True):
+            return
+        # 控制台始终打印
+        logger.info(msg)
+        # 同时发到当前会话的 QQ
+        event = self._current_event
+        if event is not None:
+            import asyncio
+            try:
+                loop = asyncio.get_running_loop()
+                loop.create_task(self._send_debug(event, msg))
+            except RuntimeError:
+                pass  # 没有 event loop 就算了
+
+    async def _send_debug(self, event: AstrMessageEvent, msg: str):
+        """安全地把 debug 信息发到 QQ。"""
+        try:
+            await event.send(event.plain_result(f"🔧 {msg}"))
+        except Exception:
+            pass  # debug 消息发送失败不影响主流程
 
     async def terminate(self):
         pass
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-#  activate_tools 元工具（模块级定义，避免 dataclass 闭包问题）
+#  activate_tools 元工具
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 
@@ -148,11 +165,14 @@ def _make_activate_tool(
 ) -> FunctionTool:
     """
     工厂函数：创建 activate_tools FunctionTool 实例。
-    使用闭包捕获隐藏工具列表和目标 ToolSet 的引用。
+    通过 handler 字段注入闭包，框架会走 handler 执行路径。
     """
 
-    async def _handler(context: ContextWrapper[AstrAgentContext], **kwargs):
-        """激活所有工具的处理函数。"""
+    async def _activate_handler(event, **kwargs):
+        """
+        handler 签名: async def handler(event: AstrMessageEvent, **kwargs)
+        框架在 _execute_local 中会把 event 作为第一个参数传入。
+        """
         restored = []
         for tool in hidden_tools:
             target_tool_set.add_tool(tool)
@@ -165,7 +185,7 @@ def _make_activate_tool(
             f"你现在可以直接调用这些工具了。"
         )
 
-    # 直接构造 FunctionTool 实例，不用 @dataclass 子类（避免闭包+dataclass 的坑）
+    # 通过 handler 字段注入，这是框架 _execute_local 认可的执行路径
     tool = FunctionTool(
         name="activate_tools",
         description=(
@@ -176,14 +196,7 @@ def _make_activate_tool(
             "type": "object",
             "properties": {},
         },
-        handler=None,  # 我们覆盖 call 方法
+        handler=_activate_handler,
     )
-
-    # 覆盖 call 方法（monkey-patch，因为 FunctionTool.call 是 raise NotImplementedError）
-    # 这比继承+dataclass 更安全，避免 pydantic dataclass 的序列化陷阱
-    async def _call(context: ContextWrapper[AstrAgentContext], **kwargs):
-        return await _handler(context, **kwargs)
-
-    tool.call = _call  # type: ignore
 
     return tool
